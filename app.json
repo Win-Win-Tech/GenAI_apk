@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Trueface",
+    "slug": "trueface",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/trueface-adaptive-logo.png",
+    "scheme": "myapp",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.trueface.mobile.trueface"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/trueface-adaptive-logo.png",
+        "backgroundColor": "#ffffff"
+      },
+      "googleServicesFile": "./google-services.json",
+      "package": "com.trueface.mobile.trueface"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/trueface-adaptive-logo.png"
+    },
+    "plugins": [
+      "expo-router",
+      "@react-native-firebase/app",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/trueface-adaptive-logo.png"
+        }
+      ],
+      [
+        "expo-dev-client",
+        {
+          "launchMode": "most-recent"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/trueface-logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "63c94b92-7cb5-4933-a5a3-d86007874601"
+      }
+    },
+    "owner": "trueface"
+  }
+}
