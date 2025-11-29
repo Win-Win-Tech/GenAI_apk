@@ -77,7 +77,7 @@ export const LoginScreen: React.FC<{ navigation?: any }> = (): React.ReactElemen
                   <MaterialIcons name="face" size={48} color="#1976d2" />
                 </View>
               </View>
-              <Text style={styles.title}>TrueFace</Text>
+              <Text style={styles.title}>Faceio</Text>
               <Text style={styles.subtitle}>Facial Recognition Attendance System</Text>
             </View>
             <View style={styles.formCard}>

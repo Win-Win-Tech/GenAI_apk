@@ -6,7 +6,6 @@ import {
   StyleSheet,
   SafeAreaView,
   ActivityIndicator,
-  ScrollView,
   Animated,
   Platform,
   Image,
@@ -232,47 +231,28 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        style={styles.content}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Instructions Card */}
-        <View style={styles.instructionsCard}>
-          <MaterialIcons name="info" size={24} color="#1976d2" />
-          <View style={styles.instructionsContent}>
-            <Text style={styles.instructionsTitle}>How to Mark Attendance</Text>
-            <Text style={styles.instructionsText}>
-              Position your face in the camera frame and tap the capture button
-            </Text>
-          </View>
-        </View>
+      <View style={styles.cameraContainer}>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="front"
+          onCameraReady={() => setCameraActive(true)}
+        />
 
-        {/* Camera View */}
-        <View style={styles.cameraCard}>
-          <View style={styles.cameraContainer}>
-            <CameraView
-              ref={cameraRef}
-              style={styles.camera}
-              facing="front"
-              onCameraReady={() => setCameraActive(true)}
-            />
-            <View style={styles.cameraOverlay}>
-              <View style={styles.faceBorder} />
-            </View>
-          </View>
+        {/* <View style={styles.cameraOverlay} pointerEvents="none">
+          <View style={styles.faceBorder} />
+        </View> */}
 
-          <View style={styles.cameraFooter}>
-            <View style={styles.cameraStatus}>
-              <View style={[styles.statusDot, cameraActive && styles.statusDotActive]} />
-              <Text style={styles.cameraStatusText}>
-                {cameraActive ? 'Camera Ready' : 'Initializing...'}
-              </Text>
-            </View>
+        {/* <View style={styles.cameraFooterOverlay}>
+          <View style={styles.cameraStatus}>
+            <View style={[styles.statusDot, cameraActive && styles.statusDotActive]} />
+            <Text style={styles.cameraStatusText}>{cameraActive ? 'Camera Ready' : 'Initializing...'}</Text>
           </View>
-        </View>
+        </View> */}
+      </View>
 
-        {/* Capture Button */}
+      {/* Fixed Footer with Capture Button */}
+      <View style={styles.footer} pointerEvents="box-none">
         <Animated.View style={{ transform: [{ scale: isProcessing ? 1 : pulseAnim }] }}>
           <TouchableOpacity
             style={[styles.captureButton, (isProcessing || !cameraActive) && styles.captureButtonDisabled]}
@@ -280,49 +260,13 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
             disabled={isProcessing || !cameraActive}
             activeOpacity={0.8}
           >
-            {isProcessing ? (
-              <ActivityIndicator color="#fff" size="large" />
-            ) : (
-              <>
-                <MaterialIcons name="photo-camera" size={32} color="#fff" />
+           
+                <MaterialIcons name="photo-camera" size={28} color="#fff" />
                 <Text style={styles.captureButtonText}>Mark Attendance</Text>
-              </>
-            )}
+              
           </TouchableOpacity>
         </Animated.View>
-
-        {/* Summary Section */}
-        {/* <View style={styles.summaryCard}>
-          <View style={styles.summaryHeader}>
-            <MaterialIcons name="today" size={24} color="#1976d2" />
-            <Text style={styles.summaryTitle}>Today's Summary</Text>
-          </View>
-          {loadingSummary ? (
-            <View style={styles.summaryLoading}>
-              <ActivityIndicator size="small" color="#1976d2" />
-              <Text style={styles.loadingText}>Loading summary...</Text>
-            </View>
-          ) : summaryData ? (
-            <View style={styles.summaryContent}>
-              <View style={styles.summaryItem}>
-                <Text style={styles.summaryLabel}>Total Present</Text>
-                <Text style={styles.summaryValue}>
-                  {summaryData.total_present || 0}
-                </Text>
-              </View>
-              <View style={styles.summaryDivider} />
-              <View style={styles.summaryItem}>
-                <Text style={styles.summaryLabel}>Total Absent</Text>
-                <Text style={styles.summaryValue}>
-                  {summaryData.total_absent || 0}
-                </Text>
-              </View>
-            </View>
-          ) : (
-            <Text style={styles.summaryEmpty}>No attendance data available</Text>
-          )}
-        </View> */}
-      </ScrollView>
+      </View>
 
       {/* Toast Notifications */}
       {toasts.length > 0 && (
@@ -342,19 +286,15 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                 />
               )}
               <View style={styles.toastContent}>
-                {/* Username */}
                 {toast.employee && (
                   <Text style={styles.toastTitle}>{toast.employee}</Text>
                 )}
-                {/* Success message always shown */}
                 {toast.type === 'success' && (
                   <Text style={styles.toastDetail}>Attendance marked successfully!</Text>
                 )}
-                {/* Error/info message fallback */}
                 {toast.type !== 'success' && (
                   <Text style={styles.toastDetail}>{toast.message}</Text>
                 )}
-                {/* Check-in/Check-out times */}
                 {(toast.checkin || toast.checkout) && (
                   <Text style={styles.toastDetail}>
                     {toast.checkin ? `Check-in: ${toast.checkin}` : ''}
@@ -480,12 +420,21 @@ const styles = StyleSheet.create({
     }),
   },
   cameraContainer: {
-    height: 400,
+    flex: 1,
     backgroundColor: '#000',
     position: 'relative',
   },
   camera: {
     flex: 1,
+  },
+  cameraFooterOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 12,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
   },
   cameraOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -527,11 +476,12 @@ const styles = StyleSheet.create({
   captureButton: {
     backgroundColor: '#1976d2',
     borderRadius: 16,
-    padding: 20,
-    marginBottom: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    // alignItems: 'center',
+    // justifyContent: 'center',
     flexDirection: 'row',
+    width: '100%',
     ...Platform.select({
       ios: {
         shadowColor: '#1976d2',
@@ -553,6 +503,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginLeft: 12,
     letterSpacing: 0.5,
+  },
+  footer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: Platform.OS === 'ios' ? 24 : 16,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    pointerEvents: 'box-none',
   },
   summaryCard: {
     backgroundColor: '#ffffff',
@@ -624,9 +583,10 @@ const styles = StyleSheet.create({
   },
   toastContainer: {
     position: 'absolute',
-    bottom: 20,
     left: 20,
     right: 20,
+    bottom: Platform.select({ ios: 120, android: 100 }),
+    zIndex: 999,
   },
   toast: {
     flexDirection: 'row',

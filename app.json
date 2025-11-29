@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Trueface",
+    "name": "Faceio",
     "slug": "trueface",
     "version": "0.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/trueface-adaptive-logo.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.trueface.mobile.trueface"

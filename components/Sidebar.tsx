@@ -67,7 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const role = auth?.role?.toLowerCase();
     switch (role) {
       case 'admin':
-        return { bg: '#ffebee', text: '#d32f2f' };
+        return { bg: '#e3f2fd', text: '#06325fff' };
       case 'superadmin':
         return { bg: '#e3f2fd', text: '#1976d2' };
       case 'manager':
@@ -200,7 +200,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           activeOpacity={0.7}
         >
           <View style={styles.logoutIconContainer}>
-            <MaterialIcons name="logout" size={20} color="#d32f2f" />
+            <MaterialIcons name="logout" size={20} color="#1976d2" />
           </View>
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
@@ -429,7 +429,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: '#ffebee',
+    backgroundColor: '#e3f2fd',
     marginBottom: 12,
   },
   logoutIconContainer: {
@@ -442,7 +442,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   logoutText: {
-    color: '#d32f2f',
+    color: '#1976d2',
     fontSize: 15,
     fontWeight: '600',
     letterSpacing: 0.2,

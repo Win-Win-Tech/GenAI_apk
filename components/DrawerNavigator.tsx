@@ -10,6 +10,7 @@ import {
   Dimensions,
   StatusBar,
   Platform,
+  PanResponder,
 } from 'react-native';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
 import { Sidebar } from './Sidebar';
@@ -47,6 +48,28 @@ export const DrawerNavigator: React.FC<DrawerNavigatorProps> = ({
     ]).start();
   }, [isDrawerOpen]);
 
+  // PanResponder to detect left-edge swipe to open drawer
+  const panResponder = React.useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: (evt, gestureState) => {
+        // Only start when touch begins near the left screen edge
+        return evt.nativeEvent.pageX <= 30;
+      },
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        const { dx, dy } = gestureState;
+        // Horizontal right swipe starting from left edge
+        return Math.abs(dx) > Math.abs(dy) && dx > 8 && evt.nativeEvent.pageX <= 30;
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        const { dx, vx } = gestureState;
+        // If swipe is far/fast enough, open drawer
+        if (dx > 60 || vx > 0.3) {
+          setIsDrawerOpen(true);
+        }
+      },
+    })
+  ).current;
+
   const toggleDrawer = () => {
     setIsDrawerOpen(!isDrawerOpen);
   };
@@ -67,42 +90,11 @@ export const DrawerNavigator: React.FC<DrawerNavigatorProps> = ({
   };
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-      
-      {/* Modern Header */}
-      <SafeAreaView style={styles.headerSafeArea}>
-        <View style={styles.headerContainer}>
-          <View style={styles.headerLeft}>
-            <TouchableOpacity
-              style={styles.menuButton}
-              onPress={toggleDrawer}
-              activeOpacity={0.6}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <View style={styles.menuIconContainer}>
-                <MaterialIcons
-                  name="menu"
-                  size={26}
-                  color="#1a1a1a"
-                />
-              </View>
-            </TouchableOpacity>
-            
-            <Text style={styles.appName}>TrueFace</Text>
-          </View>
-          
-          <View style={styles.headerTitleContainer}>
-            {/* You can add a logo or app name here */}
-          </View>
-          
-          <View style={styles.headerActions}>
-            {/* Placeholder for additional header actions */}
-          </View>
-        </View>
-      </SafeAreaView>
+    <View style={styles.container} {...panResponder.panHandlers}>
+      {/* <StatusBar barStyle="dark-content" backgroundColor="#ffffff" /> */}
 
-      {/* Main Content with subtle shadow */}
+      {/* Main Content: header removed so the app content is full-screen.
+          Drawer opens via a left-edge swipe or by tapping menu (if provided by child). */}
       <View style={styles.contentContainer}>{children}</View>
 
       {/* Enhanced Drawer Modal */}
