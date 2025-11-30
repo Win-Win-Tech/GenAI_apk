@@ -12,8 +12,8 @@ import {
 } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
-import useAuth from '../hooks/useAuth';
-import { markAttendance, getTodayAttendanceSummary } from '../api/attendanceApi';
+// import useAuth from '../hooks/useAuth';
+import { markAttendance /*, getTodayAttendanceSummary */ } from '../api/attendanceApi';
 
 interface ToastMessage {
   id: string;
@@ -27,7 +27,7 @@ interface ToastMessage {
 }
 
 export const AttendanceScreen: React.FC = (): React.ReactElement => {
-  const { logout } = useAuth();
+  // const { logout } = useAuth();
   const cameraRef = useRef<any | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -35,6 +35,11 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   const [cameraActive, setCameraActive] = useState(false);
   const [summaryData, setSummaryData] = useState<any>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
+  const [lastAttendance, setLastAttendance] = useState<{
+    employee?: string;
+    checkin?: string | null;
+    checkout?: string | null;
+  } | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -45,7 +50,8 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       } catch (err) {
         setHasPermission(false);
       }
-      await loadAttendanceSummary();
+      // await loadAttendanceSummary();
+      // Disabled: attendance summary API requires authentication. Commented out so capture works without auth.
     };
     init();
   }, []);
@@ -68,7 +74,10 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   }, []);
 
   const loadAttendanceSummary = async () => {
+    // Disabled: skip fetching attendance summary because API requires authentication.
+    // Original implementation kept below for easy restore.
     setLoadingSummary(true);
+    /*
     try {
       const response = await getTodayAttendanceSummary();
       setSummaryData(response.data);
@@ -84,6 +93,8 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     } finally {
       setLoadingSummary(false);
     }
+    */
+    setLoadingSummary(false);
   };
 
   const showToast = (
@@ -134,6 +145,9 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
       // helper: fetch today's attendance list and return matching record by employee name
       const fetchAttendanceDetails = async (empName?: string) => {
+       
+        return null;
+        /*
         if (!empName) return null;
         try {
           const r = await getTodayAttendanceSummary();
@@ -146,6 +160,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         } catch (e) {
           return null;
         }
+        */
       };
 
       const formatTime = (t?: string) => {
@@ -171,24 +186,34 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       if ((!checkin && !checkout) && employee) {
         const details = await fetchAttendanceDetails(employee);
         if (details) {
-          checkin = details.checkin || details.checkin_time || checkin;
-          checkout = details.checkout || details.checkout_time || checkout;
-        }
+            const det: any = details;
+            checkin = det.checkin || det.checkin_time || checkin;
+            checkout = det.checkout || det.checkout_time || checkout;
+          }
       }
 
       // format times for display
       const formattedCheckin = formatTime(checkin);
       const formattedCheckout = formatTime(checkout);
 
-      // show captured photo in toast (local uri) and include times if available
-      showToast(
-        payload.status && typeof payload.status === 'string' && payload.status.toLowerCase().includes('already')
-          ? 'Attendance already recorded' : 'Attendance marked successfully!',
-        payload.status && typeof payload.status === 'string' && payload.status.toLowerCase().includes('already') ? 'info' : 'success',
-        { photo: photo.uri, employee: employee, checkin: formattedCheckin ?? undefined, checkout: formattedCheckout ?? undefined }
-      );
+      // keep last attendance locally for UI (works without auth)
+      setLastAttendance({ employee: employee as string | undefined, checkin: formattedCheckin, checkout: formattedCheckout });
 
-      await loadAttendanceSummary();
+      // show captured photo in toast (local uri) and include times if available
+      const toastCheckin = formattedCheckin ?? (checkin ? String(checkin) : undefined);
+      const toastCheckout = formattedCheckout ?? (checkout ? String(checkout) : undefined);
+      const toastMessage =
+        payload.status && typeof payload.status === 'string' && payload.status.toLowerCase().includes('already')
+          ? 'Attendance already recorded'
+          : 'Attendance marked successfully!';
+      const toastType =
+        payload.status && typeof payload.status === 'string' && payload.status.toLowerCase().includes('already')
+          ? 'info'
+          : 'success';
+
+      showToast(toastMessage, toastType as any, { photo: photo.uri, employee: employee, checkin: toastCheckin ?? undefined, checkout: toastCheckout ?? undefined });
+
+      // await loadAttendanceSummary(); // Disabled: avoid authenticated API call
     } catch (error: any) {
       const message =
         error.response?.data?.detail ||
@@ -296,11 +321,18 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                   <Text style={styles.toastDetail}>{toast.message}</Text>
                 )}
                 {(toast.checkin || toast.checkout) && (
-                  <Text style={styles.toastDetail}>
-                    {toast.checkin ? `Check-in: ${toast.checkin}` : ''}
-                    {toast.checkin && toast.checkout ? '  •  ' : ''}
-                    {toast.checkout ? `Check-out: ${toast.checkout}` : ''}
-                  </Text>
+                  <View style={{ marginTop: 8 }}>
+                    {toast.checkin && (
+                      <Text style={[styles.toastDetail, { fontWeight: '600' }]}>
+                        Check-in: {toast.checkin}
+                      </Text>
+                    )}
+                    {toast.checkout && (
+                      <Text style={[styles.toastDetail, { fontWeight: '600' }]}>
+                        Check-out: {toast.checkout}
+                      </Text>
+                    )}
+                  </View>
                 )}
               </View>
             </View>
