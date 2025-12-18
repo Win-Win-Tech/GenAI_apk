@@ -63,7 +63,9 @@
     "react-native-webview": "13.12.5",
     "zod": "^3.24.2",
     "expo-file-system": "~18.0.12",
-    "expo-sharing": "~13.0.1"
+    "expo-sharing": "~13.0.1",
+    "expo-location": "~18.0.10",
+    "expo-speech": "~13.0.1"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
