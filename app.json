@@ -48,8 +48,7 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ],
-      "expo-face-detector"
+      ]
     ],
     "experiments": {
       "typedRoutes": true

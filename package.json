@@ -35,7 +35,6 @@
     "expo-constants": "~17.0.5",
     "expo-dev-client": "~5.0.19",
     "expo-device": "~7.0.3",
-    "expo-face-detector": "^13.0.2",
     "expo-file-system": "~18.0.12",
     "expo-font": "~13.0.3",
     "expo-haptics": "~14.0.1",
