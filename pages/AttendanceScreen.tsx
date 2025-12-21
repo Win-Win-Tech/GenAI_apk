@@ -11,6 +11,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { CameraView, Camera } from 'expo-camera';
+import MLKitFaceDetector from '@react-native-ml-kit/face-detection';
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
@@ -180,7 +181,14 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     } catch (error: any) {
       console.warn('Geolocation error:', error);
       setGeoError(error.message || 'Failed to get location');
-      setGeolocation(null);
+      // If permission is granted but location fetch failed, don't set locationPermission to false
+      // This allows the camera to start even if location fetch fails
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status === 'granted') {
+        setLocationPermission(true);
+      } else {
+        setLocationPermission(false);
+      }
       return null;
     }
   }, []);
@@ -401,7 +409,47 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     }
   }, [geolocation, fetchGeolocation, showToast, speakText, stopCameraWith]);
 
-  // Handle face detection (simulated with timer since expo-camera doesn't have built-in face detection on all platforms)
+  // Check for face detection by analyzing camera frames
+  // Only runs when camera is active and not processing a capture
+  const checkForFace = useCallback(async () => {
+    // Don't check for face if already processing a capture or camera not ready
+    if (!cameraRef.current || isProcessingRef.current || !started || !cameraActive) {
+      return false;
+    }
+
+    try {
+      // Capture a low-quality frame for face detection (not the final photo)
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.3,
+        base64: false,
+      });
+
+      if (!photo || !photo.uri) {
+        return false;
+      }
+
+      // Detect faces using ML Kit Face Detector
+      const faces = await MLKitFaceDetector.detect(photo.uri, {
+        performanceMode: 'fast' as const,
+      });
+
+      // Check if at least one face is detected
+      const detected = faces && Array.isArray(faces) && faces.length > 0;
+
+      // Update face detected state
+      if (faceDetectedRef.current !== detected) {
+        faceDetectedRef.current = detected;
+        setFaceDetected(detected);
+      }
+
+      return detected;
+    } catch (error) {
+      console.warn('Face detection error:', error);
+      return false;
+    }
+  }, [started, cameraActive]);
+
+  // Handle face detection with periodic checks
   useEffect(() => {
     if (!started || !cameraActive) {
       if (faceDetectedRef.current !== false) {
@@ -415,30 +463,40 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       return;
     }
 
-    // Auto-capture after camera is ready (simulating face detection)
-    const detectInterval = setInterval(() => {
-      if (isProcessingRef.current) return;
-
-      // Simulate face detection (always detected when camera is active)
-      const detected = true;
-
-      if (faceDetectedRef.current !== detected) {
-        faceDetectedRef.current = detected;
-        setFaceDetected(detected);
+    // Check for faces periodically
+    const detectInterval = setInterval(async () => {
+      // Skip if already processing a capture
+      if (isProcessingRef.current) {
+        return;
       }
 
+      // Check for face detection
+      const detected = await checkForFace();
+
+      // Only proceed if face is detected and not already processing
       if (detected && !isProcessingRef.current && !captureTimeoutRef.current) {
         const now = Date.now();
-        const cooldownMs = 10000; // 10 second cooldown
-        // Check both lastCaptureTimeRef and nextAllowedCaptureAtRef (like web version)
+        const cooldownMs = 10000; // 10 second cooldown between captures
+        // Check both lastCaptureTimeRef and nextAllowedCaptureAtRef
         const allowedByTime =
           now - lastCaptureTimeRef.current > cooldownMs && now >= nextAllowedCaptureAtRef.current;
 
         if (allowedByTime) {
+          // Clear any existing timeout
+          if (captureTimeoutRef.current) {
+            clearTimeout(captureTimeoutRef.current);
+          }
+
+          // Set a delay before capture to ensure face is stable
           captureTimeoutRef.current = setTimeout(async () => {
-            if (faceDetectedRef.current && !isProcessingRef.current && cameraRef.current) {
+            // Double-check face is still detected before capturing
+            const stillDetected = await checkForFace();
+            if (stillDetected && !isProcessingRef.current && cameraRef.current) {
               try {
+                // Capture and send - toast will be shown after API response
                 await captureAndSend();
+                // After capture completes, the cooldown is set in captureAndSend
+                // This ensures we wait before checking for face again
               } catch (e) {
                 console.error('Auto-capture error', e);
                 lastCaptureTimeRef.current = Date.now();
@@ -446,12 +504,26 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                 isProcessingRef.current = false;
                 setIsProcessing(false);
               }
+            } else {
+              // Face lost before capture, reset state
+              faceDetectedRef.current = false;
+              setFaceDetected(false);
             }
             captureTimeoutRef.current = null;
-          }, 2000); // 2 second delay before capture
+          }, 2000); // 2 second delay before capture to ensure face is stable
+        }
+      } else if (!detected) {
+        // If no face detected, clear any pending capture timeout and reset state
+        if (captureTimeoutRef.current) {
+          clearTimeout(captureTimeoutRef.current);
+          captureTimeoutRef.current = null;
+        }
+        if (faceDetectedRef.current !== false) {
+          faceDetectedRef.current = false;
+          setFaceDetected(false);
         }
       }
-    }, 900);
+    }, 1000); // Check every 1 second for face detection
 
     return () => {
       clearInterval(detectInterval);
@@ -460,13 +532,46 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         captureTimeoutRef.current = null;
       }
     };
-  }, [started, cameraActive, captureAndSend]);
+  }, [started, cameraActive, checkForFace, captureAndSend]);
 
   // Handle start - explicit user action to request location first, then start camera
   const handleStart = useCallback(async () => {
     dismissAllToasts();
-    const geo = await fetchGeolocation();
-    if (!geo) return; // Don't start if location not granted
+    
+    // Check current permission status
+    let permissionStatus = 'undetermined';
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      permissionStatus = status;
+    } catch (e) {
+      console.warn('Error checking permission:', e);
+    }
+    
+    // If permission not granted, request it
+    if (permissionStatus !== 'granted') {
+      const geo = await fetchGeolocation();
+      // Check permission again after request
+      try {
+        const { status: newStatus } = await Location.getForegroundPermissionsAsync();
+        if (newStatus !== 'granted') {
+          showToast('Location permission is required to mark attendance', 'error', undefined, 'location-required');
+          return;
+        }
+        setLocationPermission(true);
+      } catch (e) {
+        console.warn('Error checking permission after request:', e);
+        return;
+      }
+    } else {
+      // Permission already granted
+      setLocationPermission(true);
+      // Try to fetch location in background (don't block camera start)
+      fetchGeolocation().catch(err => {
+        console.warn('Background location fetch failed:', err);
+      });
+    }
+    
+    // Start camera - permission is granted at this point
     if (!started) {
       // Reset refs when starting fresh
       lastCaptureTimeRef.current = 0;
@@ -475,7 +580,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     setStarted(true);
     setCameraActive(true);
     setStoppedState('idle');
-  }, [started, dismissAllToasts, fetchGeolocation]);
+  }, [started, dismissAllToasts, fetchGeolocation, showToast]);
 
   // On component mount: auto-start camera if location is already granted
   useEffect(() => {
@@ -483,12 +588,24 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     (async () => {
       // If already started (manual retry flow), don't interfere
       if (started) return;
-      const geo = await fetchGeolocation();
-      if (cancelled) return;
-      if (geo) {
-        // Location allowed: auto-start camera/workflow
-        setStarted(true);
-        setCameraActive(true);
+      
+      // Check if permission is already granted
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (cancelled) return;
+        
+        if (status === 'granted') {
+          setLocationPermission(true);
+          // Location permission granted: auto-start camera/workflow
+          setStarted(true);
+          setCameraActive(true);
+          // Try to fetch location in background
+          fetchGeolocation().catch(err => {
+            console.warn('Background location fetch failed:', err);
+          });
+        }
+      } catch (e) {
+        console.warn('Error checking location permission:', e);
       }
     })();
     return () => {
@@ -557,7 +674,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                 ]}
               >
                 <View style={styles.startIconContainer}>
-                  <MaterialIcons name="face" size={54} color="#fff" />
+                  <Text style={styles.startIconEmoji}>📸</Text>
                 </View>
                 <View style={styles.iconRing} />
               </Animated.View>
@@ -588,7 +705,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   if (cameraActive) {
     const scanLineTranslate = scanLineAnim.interpolate({
       inputRange: [0, 1],
-      outputRange: [0, SCREEN_HEIGHT - 200],
+      outputRange: [0, SCREEN_HEIGHT],
     });
 
     return (
@@ -602,15 +719,14 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           />
 
           {/* Detection Frame */}
-          {/* <View style={styles.detectionFrame} pointerEvents="none">
-            <Animated.View
+          <View style={styles.detectionFrame} pointerEvents="none">
+            {/* <Animated.View
               style={[
                 styles.scanningLine,
                 { transform: [{ translateY: scanLineTranslate }] },
               ]}
-            />
+            /> */}
           </View>
-           */}
 
           {/* Processing Overlay */}
           {isProcessing && (
@@ -974,6 +1090,9 @@ const styles = StyleSheet.create({
       },
     }),
   },
+  startIconEmoji: {
+    fontSize: 54,
+  },
   iconRing: {
     position: 'absolute',
     top: -12,
@@ -1036,24 +1155,36 @@ const styles = StyleSheet.create({
   detectionFrame: {
     ...StyleSheet.absoluteFillObject,
     borderWidth: 3,
-    borderColor: 'rgba(59, 130, 246, 0.55)',
+    borderColor: 'rgba(59, 130, 246, 0.6)',
+    borderRadius: 0,
     overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#3b82f6',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.5,
+        shadowRadius: 20,
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
   },
   scanningLine: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 3,
+    height: 4,
     backgroundColor: '#60a5fa',
     ...Platform.select({
       ios: {
         shadowColor: '#60a5fa',
         shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.7,
-        shadowRadius: 14,
+        shadowOpacity: 0.9,
+        shadowRadius: 16,
       },
       android: {
-        elevation: 4,
+        elevation: 6,
       },
     }),
   },
@@ -1224,28 +1355,31 @@ const styles = StyleSheet.create({
   // Toast styles
   toastContainer: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    bottom: Platform.OS === 'ios' ? 100 : 80,
     left: 16,
     right: 16,
     zIndex: 999,
+    alignItems: 'center',
   },
   toast: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    backgroundColor: 'rgba(255, 255, 255, 0.98)',
     padding: 16,
     borderRadius: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.2)',
+    borderColor: 'rgba(148, 163, 184, 0.25)',
+    width: '100%',
+    maxWidth: 400,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 16 },
-        shadowOpacity: 0.12,
-        shadowRadius: 32,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.15,
+        shadowRadius: 24,
       },
       android: {
-        elevation: 8,
+        elevation: 12,
       },
     }),
   },
