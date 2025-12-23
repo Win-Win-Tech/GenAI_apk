@@ -10,10 +10,12 @@ import {
   Platform,
   Dimensions,
 } from 'react-native';
-import { CameraView, Camera } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
+import * as FaceDetector from 'expo-face-detector';
+import { captureRef } from 'react-native-view-shot';
 import { markAttendance } from '../api/attendanceApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -38,8 +40,8 @@ interface GeoLocation {
 type StoppedState = 'idle' | 'error' | 'cancelled' | 'success' | 'retry';
 
 export const AttendanceScreen: React.FC = (): React.ReactElement => {
-  const cameraRef = useRef<any | null>(null);
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const cameraRef = useRef<CameraView | null>(null);
+  const [permission, requestPermission] = useCameraPermissions();
   const [locationPermission, setLocationPermission] = useState<boolean | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -49,13 +51,19 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   const [stoppedState, setStoppedState] = useState<StoppedState>('idle');
   const [geolocation, setGeolocation] = useState<GeoLocation | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
+  const [faceInFrame, setFaceInFrame] = useState(false);
 
   // Refs for managing state in callbacks
   const isProcessingRef = useRef(false);
   const faceDetectedRef = useRef(false);
   const lastCaptureTimeRef = useRef(0);
   const captureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const faceDetectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastToastTimeRef = useRef<{ [key: string]: number }>({});
+  const faceInFrameRef = useRef(false);
+  const nextAllowedCaptureAtRef = useRef(0);
+  const faceDetectionCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const containerRef = useRef<View | null>(null);
 
   // Animations
   const scanLineAnim = useRef(new Animated.Value(0)).current;
@@ -67,13 +75,10 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   useEffect(() => {
     const init = async () => {
       try {
-        const { status: cameraStatus } = await Camera.getCameraPermissionsAsync();
-        setHasPermission(cameraStatus === 'granted');
-
         const { status: locationStatus } = await Location.getForegroundPermissionsAsync();
         setLocationPermission(locationStatus === 'granted');
       } catch (err) {
-        setHasPermission(false);
+        // Ignore
       }
     };
     init();
@@ -229,13 +234,6 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     }
   }, []);
 
-  // Stop camera
-  const stopCamera = useCallback(() => {
-    setCameraActive(false);
-    faceDetectedRef.current = false;
-    setFaceDetected(false);
-  }, []);
-
   // Stop camera with reason
   const stopCameraWith = useCallback((reason: StoppedState) => {
     setCameraActive(false);
@@ -250,16 +248,87 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     }
   }, []);
 
+  // Handle faces detected (via ML Kit on captured image)
+  const handleFacesDetected = useCallback(async (imageUri: string) => {
+    try {
+      console.log('Starting face detection on image:', imageUri);
+      const result = await FaceDetector.detectFacesAsync(imageUri, {
+        mode: FaceDetector.FaceDetectorMode.accurate, // Use accurate mode for better detection
+        detectLandmarks: FaceDetector.FaceDetectorLandmarks.none,
+        runClassifications: FaceDetector.FaceDetectorClassifications.all,
+      });
+
+      console.log('Face detection result:', result.faces.length, 'faces found');
+
+      if (result.faces.length > 0) {
+        if (!faceInFrameRef.current) {
+          faceInFrameRef.current = true;
+          setFaceInFrame(true);
+        }
+        return true;
+      } else {
+        if (faceInFrameRef.current) {
+          faceInFrameRef.current = false;
+          setFaceInFrame(false);
+        }
+        return false;
+      }
+    } catch (error) {
+      console.warn('Face detection error:', error);
+      return false;
+    }
+  }, []);
+
+
+
+  // Check if camera has meaningful content (potential face)
+  const hasPotentialFaceInFrame = useCallback((): boolean => {
+    // Only return true if a face has been detected in the current frame
+    return faceInFrameRef.current;
+  }, []);
+
   // Capture and send attendance
   const captureAndSend = useCallback(async () => {
     if (!cameraRef.current || isProcessingRef.current) return;
 
+    // Guard: Only capture if face is actually detected
+    if (!faceInFrameRef.current) {
+      console.warn('No face detected in frame - skipping capture');
+      return;
+    }
+
     // Set cooldown immediately
     lastCaptureTimeRef.current = Date.now();
+    // Default cooldown to prevent rapid firing
+    nextAllowedCaptureAtRef.current = Date.now() + 5000;
+
     isProcessingRef.current = true;
     setIsProcessing(true);
 
     try {
+      // Capture photo
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.8,
+        base64: true,
+        shutterSound: false,
+      });
+
+      if (!photo) {
+        showToast('Failed to capture photo', 'error');
+        isProcessingRef.current = false;
+        setIsProcessing(false);
+        return;
+      }
+
+      // Detect faces before sending - REMOVED to speed up processing
+      // We already checked faceInFrame at the start
+      // const hasFace = await handleFacesDetected(photo.uri);
+      // if (!hasFace) {
+      //   isProcessingRef.current = false;
+      //   setIsProcessing(false);
+      //   return;
+      // }
+
       // Get geolocation
       let geoData = geolocation;
       if (!geoData) {
@@ -273,19 +342,6 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           undefined,
           'attendance-location-missing'
         );
-        isProcessingRef.current = false;
-        setIsProcessing(false);
-        return;
-      }
-
-      // Capture photo
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.8,
-        base64: true,
-      });
-
-      if (!photo) {
-        showToast('Failed to capture photo', 'error');
         isProcessingRef.current = false;
         setIsProcessing(false);
         return;
@@ -339,6 +395,10 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           speakText(speakMsg);
         } catch (e) { }
 
+        // After success, wait longer (8 seconds) before allowing next capture
+        // This prevents the same person from being captured again immediately
+        nextAllowedCaptureAtRef.current = Date.now() + 12000;
+
         isProcessingRef.current = false;
         setIsProcessing(false);
         return;
@@ -376,11 +436,11 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       }
 
       showToast(`${errTitle}: ${errMsg}`, 'error', undefined, 'attendance-error');
-      stopCameraWith('error');
+      // stopCameraWith('error'); // Keep camera active even on error
       isProcessingRef.current = false;
       setIsProcessing(false);
     }
-  }, [geolocation, fetchGeolocation, showToast, speakText, stopCameraWith]);
+  }, [geolocation, fetchGeolocation, showToast, speakText, stopCameraWith, handleFacesDetected]);
 
   // Handle face detection and auto-capture
   useEffect(() => {
@@ -389,35 +449,79 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         clearTimeout(captureTimeoutRef.current);
         captureTimeoutRef.current = null;
       }
+      if (faceDetectionTimeoutRef.current) {
+        clearTimeout(faceDetectionTimeoutRef.current);
+        faceDetectionTimeoutRef.current = null;
+      }
       return;
     }
 
-    // Detect and auto-capture on interval
-    const detectInterval = setInterval(() => {
-      if (isProcessingRef.current || !cameraRef.current || captureTimeoutRef.current) return;
+    // Periodic check for auto-capture when face is detected
+    const checkInterval = setInterval(() => {
+      if (isProcessingRef.current || !cameraRef.current || faceDetectionTimeoutRef.current) return;
 
       const now = Date.now();
+
+      // Check if we are in a cooldown period
+      if (now < nextAllowedCaptureAtRef.current) return;
+
       const timeSinceLastCapture = now - lastCaptureTimeRef.current;
 
-      // Allow capture if cooldown has passed
-      if (timeSinceLastCapture >= 10000) {
-        captureTimeoutRef.current = setTimeout(async () => {
+      // Only attempt capture if:
+      // 1. Cooldown has passed (5 seconds between captures)
+      if (timeSinceLastCapture >= 5000) {
+        faceDetectionTimeoutRef.current = setTimeout(async () => {
           if (!isProcessingRef.current && cameraRef.current) {
-            await captureAndSend();
+            try {
+              // Capture a high-quality photo for face detection
+              const photo = await cameraRef.current.takePictureAsync({
+                quality: 0.8,
+                base64: false,
+                shutterSound: false,
+              });
+
+              if (photo && photo.uri) {
+                // Check if the captured image actually has a face using ML Kit
+                const hasFace = await handleFacesDetected(photo.uri);
+
+                if (hasFace) {
+                  // Face detected! Now proceed with full capture and send
+                  await captureAndSend();
+                } else {
+                  console.warn('Face detection check: No face found in captured frame');
+                }
+
+                // Clean up the test photo
+                try {
+                  const FileSystem = require('expo-file-system');
+                  if (FileSystem && photo.uri) {
+                    await FileSystem.deleteAsync(photo.uri).catch(() => { });
+                  }
+                } catch (e) {
+                  // Ignore cleanup errors
+                }
+              }
+            } catch (error) {
+              console.warn('Face detection capture error:', error);
+            }
           }
-          captureTimeoutRef.current = null;
-        }, 500); // Minimal delay before capture
+          faceDetectionTimeoutRef.current = null;
+        }, 200);
       }
-    }, 900);
+    }, 800); // Check every 0.8 seconds for more responsive detection
 
     return () => {
-      clearInterval(detectInterval);
+      clearInterval(checkInterval);
       if (captureTimeoutRef.current) {
         clearTimeout(captureTimeoutRef.current);
         captureTimeoutRef.current = null;
       }
+      if (faceDetectionTimeoutRef.current) {
+        clearTimeout(faceDetectionTimeoutRef.current);
+        faceDetectionTimeoutRef.current = null;
+      }
     };
-  }, [started, cameraActive, captureAndSend]);
+  }, [started, cameraActive, captureAndSend, hasPotentialFaceInFrame]);
 
   // Handle start - explicit user action to request location first, then start camera
   const handleStart = useCallback(async () => {
@@ -427,6 +531,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     if (!started) {
       // Reset refs when starting fresh
       lastCaptureTimeRef.current = 0;
+      nextAllowedCaptureAtRef.current = 0;
     }
     setStarted(true);
     setCameraActive(true);
@@ -458,6 +563,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     isProcessingRef.current = false;
     setIsProcessing(false);
     lastCaptureTimeRef.current = 0; // Reset to allow immediate retry
+    nextAllowedCaptureAtRef.current = 0;
     setStoppedState('idle');
     setCameraActive(true);
   }, [dismissAllToasts]);
@@ -468,17 +574,17 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   }, [stopCameraWith]);
 
   // Request camera permission
-  const requestPermission = async () => {
-    try {
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(status === 'granted');
-    } catch (err) {
-      setHasPermission(false);
-    }
-  };
+  // const requestPermission = async () => {
+  //   try {
+  //     const { status } = await Camera.requestCameraPermissionsAsync();
+  //     setHasPermission(status === 'granted');
+  //   } catch (err) {
+  //     setHasPermission(false);
+  //   }
+  // };
 
   // Permission screen
-  if (hasPermission !== true) {
+  if (!permission?.granted) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.permissionContainer}>
@@ -548,7 +654,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.cameraContainer}>
+        <View style={styles.cameraContainer} ref={containerRef} collapsable={false}>
           <CameraView
             ref={cameraRef}
             style={styles.camera}
@@ -566,6 +672,20 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
             />
           </View>
            */}
+
+          {/* Face Detection Status */}
+          <View style={styles.faceDetectionStatus}>
+            <View style={[styles.faceStatusIndicator, faceInFrame && styles.faceStatusDetected]}>
+              <MaterialIcons
+                name={faceInFrame ? 'check-circle' : 'face'}
+                size={20}
+                color={faceInFrame ? '#10b981' : '#64748b'}
+              />
+              <Text style={[styles.faceStatusText, faceInFrame && styles.faceStatusDetectedText]}>
+                {faceInFrame ? 'Face Detected' : 'No Face Detected'}
+              </Text>
+            </View>
+          </View>
 
           {/* Processing Overlay */}
           {isProcessing && (
@@ -1302,5 +1422,47 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#3b82f6',
     marginTop: 2,
+  },
+
+  // Face Detection Status
+  faceDetectionStatus: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 40,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    zIndex: 100,
+  },
+  faceStatusIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(226, 232, 240, 0.9)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
+  },
+  faceStatusDetected: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  },
+  faceStatusText: {
+    marginLeft: 8,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  faceStatusDetectedText: {
+    color: '#10b981',
   },
 });
