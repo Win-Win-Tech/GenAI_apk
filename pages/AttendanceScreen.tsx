@@ -14,8 +14,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
 import MaterialIcons from 'react-native-vector-icons/MaterialIcons';
-import * as FaceDetector from 'expo-face-detector';
-import { captureRef } from 'react-native-view-shot';
+import MLKitFaceDetection from '@react-native-ml-kit/face-detection';
 import { markAttendance } from '../api/attendanceApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -84,10 +83,11 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     init();
   }, []);
 
-  // Scanning line animation
+  // Scanning line animation - only animate when camera is active
   useEffect(() => {
+    let animationRef: any = null;
     if (started && cameraActive) {
-      Animated.loop(
+      animationRef = Animated.loop(
         Animated.sequence([
           Animated.timing(scanLineAnim, {
             toValue: 1,
@@ -100,15 +100,19 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
             useNativeDriver: true,
           }),
         ])
-      ).start();
+      );
+      animationRef.start();
     } else {
       scanLineAnim.setValue(0);
     }
-  }, [started, cameraActive]);
+    return () => {
+      if (animationRef) animationRef.stop();
+    };
+  }, [started, cameraActive, scanLineAnim]);
 
-  // Pulse animation for start button
+  // Pulse animation for start button - memoized to prevent recreation
   useEffect(() => {
-    Animated.loop(
+    const pulseAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.05,
@@ -121,12 +125,14 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           useNativeDriver: true,
         }),
       ])
-    ).start();
-  }, []);
+    );
+    pulseAnimation.start();
+    return () => pulseAnimation.stop();
+  }, [pulseAnim]);
 
-  // Float animation for start icon
+  // Float animation for start icon - memoized to prevent recreation
   useEffect(() => {
-    Animated.loop(
+    const floatAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(startIconAnim, {
           toValue: -10,
@@ -139,25 +145,32 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           useNativeDriver: true,
         }),
       ])
-    ).start();
-  }, []);
+    );
+    floatAnimation.start();
+    return () => floatAnimation.stop();
+  }, [startIconAnim]);
 
-  // Spinner rotation animation
+  // Spinner rotation animation - only animate when processing
   useEffect(() => {
+    let spinnerRef: any = null;
     if (isProcessing) {
-      Animated.loop(
+      spinnerRef = Animated.loop(
         Animated.timing(spinnerAnim, {
           toValue: 1,
           duration: 800,
           useNativeDriver: true,
         })
-      ).start();
+      );
+      spinnerRef.start();
     } else {
       spinnerAnim.setValue(0);
     }
-  }, [isProcessing]);
+    return () => {
+      if (spinnerRef) spinnerRef.stop();
+    };
+  }, [isProcessing, spinnerAnim]);
 
-  // Fetch geolocation
+  // Fetch geolocation - optimized with faster accuracy
   const fetchGeolocation = useCallback(async (): Promise<GeoLocation | null> => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -168,8 +181,9 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       }
       setLocationPermission(true);
 
+      // Use lowest accuracy for fastest response
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.Low, // Changed to Low for fastest response (1-3s)
       });
 
       const geoData: GeoLocation = {
@@ -194,7 +208,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     setToasts([]);
   }, []);
 
-  // Show toast notification
+  // Show toast notification - memoized with fixed dependency array
   const showToast = useCallback(
     (
       message: string,
@@ -202,17 +216,19 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       opts?: Partial<Omit<ToastMessage, 'id' | 'message' | 'type'>>,
       key?: string
     ) => {
+      // Rate limit identical toast types with same key
       if (key) {
         const now = Date.now();
-        if (lastToastTimeRef.current[key] && now - lastToastTimeRef.current[key] < 3000) {
-          return;
+        if (lastToastTimeRef.current[key] && now - lastToastTimeRef.current[key] < 2500) {
+          return; // Reduced from 3000 to 2500ms
         }
         lastToastTimeRef.current[key] = now;
       }
 
       const id = Date.now().toString();
       setToasts((prev) => [...prev, { id, message, type, ...(opts || {}) }]);
-      setTimeout(() => removeToast(id), 5000);
+      // Auto-remove after 5 seconds
+      setTimeout(() => removeToast(id), 3000);
     },
     []
   );
@@ -221,13 +237,33 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Speak text for accessibility
   const speakText = useCallback((text: string) => {
     try {
+      // Stop any ongoing speech
+      Speech.stop();
+
+      // Speak immediately without delay for better sync with toast
       Speech.speak(text, {
         language: 'en-US',
-        rate: 0.9,
-        pitch: 1.2,
+        rate: 0.9, // Slightly faster for clarity
+        pitch: 1.0,
+        volume: 1.0,
+        ...(Platform.OS === 'android' && {
+          androidAudioAttributes: {
+            contentType: 3, // CONTENT_TYPE_SPEECH
+            flags: 2, // FLAG_AUDIBILITY_ENFORCED
+            usage: 2, // USAGE_ASSISTANCE_SONIFICATION
+          },
+        }),
+        onStart: () => {
+          console.log('Speech started');
+        },
+        onDone: () => {
+          console.log('Speech completed');
+        },
+        onError: (error: any) => {
+          console.warn('Speech error:', error);
+        },
       });
     } catch (e) {
       console.warn('Speech synthesis failed', e);
@@ -248,73 +284,26 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     }
   }, []);
 
-  // Handle faces detected (via ML Kit on captured image)
-  const handleFacesDetected = useCallback(async (imageUri: string) => {
-    try {
-      console.log('Starting face detection on image:', imageUri);
-      const result = await FaceDetector.detectFacesAsync(imageUri, {
-        mode: FaceDetector.FaceDetectorMode.accurate, // Use accurate mode for better detection
-        detectLandmarks: FaceDetector.FaceDetectorLandmarks.none,
-        runClassifications: FaceDetector.FaceDetectorClassifications.all,
-      });
-
-      console.log('Face detection result:', result.faces.length, 'faces found');
-
-      if (result.faces.length > 0) {
-        if (!faceInFrameRef.current) {
-          faceInFrameRef.current = true;
-          setFaceInFrame(true);
-        }
-        return true;
-      } else {
-        if (faceInFrameRef.current) {
-          faceInFrameRef.current = false;
-          setFaceInFrame(false);
-        }
-        return false;
-      }
-    } catch (error) {
-      console.warn('Face detection error:', error);
-      return false;
-    }
-  }, []);
-
-
-
-  // Check if camera has meaningful content (potential face)
-  const hasPotentialFaceInFrame = useCallback((): boolean => {
-    // Only return true if a face has been detected in the current frame
-    return faceInFrameRef.current;
-  }, []);
-
-  // Capture and send attendance
+  // Capture and send attendance (only called when face is detected from stream)
   const captureAndSend = useCallback(async () => {
     if (!cameraRef.current || isProcessingRef.current) return;
 
-    // Guard: Only capture if face is actually detected
-    if (!faceInFrameRef.current) {
-      console.warn('No face detected in frame - skipping capture');
-      return;
-    }
-
-    // Set cooldown immediately
-    lastCaptureTimeRef.current = Date.now();
-    // Default cooldown to prevent rapid firing
-    nextAllowedCaptureAtRef.current = Date.now() + 5000;
-
     isProcessingRef.current = true;
     setIsProcessing(true);
+    lastCaptureTimeRef.current = Date.now();
 
     try {
-      // Capture photo
+      // Capture photo - optimized quality for faster upload
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.8,
+        quality: 0.5, // Reduced to 0.5 for much faster transmission
         base64: true,
         shutterSound: false,
       });
 
       if (!photo) {
-        showToast('Failed to capture photo', 'error');
+        const photoErrorMsg = 'Failed to capture photo';
+        showToast(photoErrorMsg, 'error');
+        speakText(photoErrorMsg);
         isProcessingRef.current = false;
         setIsProcessing(false);
         return;
@@ -336,18 +325,19 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       }
 
       if (!geoData) {
+        const errorMsg = 'Enable location on your device to mark attendance. If already allowed, check app permissions.';
         showToast(
-          'Enable location on your device to mark attendance. If already allowed, check app permissions.',
+          errorMsg,
           'error',
           undefined,
           'attendance-location-missing'
         );
+        speakText(errorMsg);
         isProcessingRef.current = false;
         setIsProcessing(false);
         return;
       }
 
-      // Prepare form data
       const formData = new FormData();
       formData.append('image', {
         uri: photo.uri,
@@ -355,16 +345,13 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         name: 'face.jpg',
       } as any);
 
-      // Append geolocation data
       formData.append('latitude', geoData.latitude.toFixed(6));
       formData.append('longitude', geoData.longitude.toFixed(6));
       formData.append('accuracy', String(Math.round(geoData.accuracy)));
 
-      // Send to API
       const response = await markAttendance(formData);
       const data = response?.data || {};
 
-      // Handle response
       if (data.status && data.message) {
         let toastTitle = 'Attendance Marked';
         let toastType: ToastMessage['type'] = 'success';
@@ -383,27 +370,33 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           checkout: data.checkout_time || data.checkout,
         });
 
-        // Speak result
+        // Speak result - synchronized with toast display
         try {
-          const employeeName = data?.employee || data?.employee_name || '';
+          const employeeName = data?.employee || data?.employee_name || 'User';
+          const hasCheckout = data?.checkout_time || data?.checkout;
+          const attendanceType = hasCheckout ? 'check-out' : 'check-in';
           let speakMsg = '';
-          if (data.status === 'Already marked') {
-            speakMsg = 'Your attendance for today is already recorded. Have a good day.';
-          } else {
-            speakMsg = employeeName ? `${data.message}` : data.message;
+          
+          if (toastType === 'success') {
+            speakMsg = `Hi ${employeeName}, your attendance is marked`;
+          } else if (toastType === 'info') {
+            speakMsg = `Hi ${employeeName}, you have already checked ${attendanceType}`;
           }
-          speakText(speakMsg);
+          
+          if (speakMsg) {
+            speakText(speakMsg);
+          }
         } catch (e) { }
 
-        // After success, wait longer (8 seconds) before allowing next capture
-        // This prevents the same person from being captured again immediately
-        nextAllowedCaptureAtRef.current = Date.now() + 12000;
+        nextAllowedCaptureAtRef.current = Date.now() + 500;
 
         isProcessingRef.current = false;
         setIsProcessing(false);
         return;
       } else {
-        showToast('Received unexpected response from server.', 'error', undefined, 'attendance-unknown');
+        const unknownErrorMsg = 'Received unexpected response from server.';
+        showToast(unknownErrorMsg, 'error', undefined, 'attendance-unknown');
+        speakText(unknownErrorMsg);
         isProcessingRef.current = false;
         setIsProcessing(false);
       }
@@ -435,93 +428,105 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         }
       }
 
-      showToast(`${errTitle}: ${errMsg}`, 'error', undefined, 'attendance-error');
-      // stopCameraWith('error'); // Keep camera active even on error
+      const fullErrorMsg = `${errTitle}: ${errMsg}`;
+      showToast(fullErrorMsg, 'error', undefined, 'attendance-error');
+      speakText(fullErrorMsg);
+    
+      nextAllowedCaptureAtRef.current = Date.now() + 300;
       isProcessingRef.current = false;
       setIsProcessing(false);
     }
-  }, [geolocation, fetchGeolocation, showToast, speakText, stopCameraWith, handleFacesDetected]);
+  }, [geolocation, fetchGeolocation, showToast, speakText, stopCameraWith]);
 
-  // Handle face detection and auto-capture
-  useEffect(() => {
-    if (!started || !cameraActive) {
-      if (captureTimeoutRef.current) {
-        clearTimeout(captureTimeoutRef.current);
-        captureTimeoutRef.current = null;
-      }
-      if (faceDetectionTimeoutRef.current) {
-        clearTimeout(faceDetectionTimeoutRef.current);
-        faceDetectionTimeoutRef.current = null;
+  const scanForFaces = useCallback(async () => {
+    if (!started || !cameraActive || isProcessingRef.current || !cameraRef.current) return;
+
+    const now = Date.now();
+    
+    if (now < nextAllowedCaptureAtRef.current) {
+      if (faceInFrameRef.current) {
+        faceInFrameRef.current = false;
+        setFaceInFrame(false);
       }
       return;
     }
 
-    // Periodic check for auto-capture when face is detected
-    const checkInterval = setInterval(() => {
-      if (isProcessingRef.current || !cameraRef.current || faceDetectionTimeoutRef.current) return;
+    if (faceDetectionTimeoutRef.current) return;
 
-      const now = Date.now();
-
-      // Check if we are in a cooldown period
-      if (now < nextAllowedCaptureAtRef.current) return;
-
-      const timeSinceLastCapture = now - lastCaptureTimeRef.current;
-
-      // Only attempt capture if:
-      // 1. Cooldown has passed (5 seconds between captures)
-      if (timeSinceLastCapture >= 5000) {
-        faceDetectionTimeoutRef.current = setTimeout(async () => {
-          if (!isProcessingRef.current && cameraRef.current) {
-            try {
-              // Capture a high-quality photo for face detection
-              const photo = await cameraRef.current.takePictureAsync({
-                quality: 0.8,
-                base64: false,
-                shutterSound: false,
-              });
-
-              if (photo && photo.uri) {
-                // Check if the captured image actually has a face using ML Kit
-                const hasFace = await handleFacesDetected(photo.uri);
-
-                if (hasFace) {
-                  // Face detected! Now proceed with full capture and send
-                  await captureAndSend();
-                } else {
-                  console.warn('Face detection check: No face found in captured frame');
-                }
-
-                // Clean up the test photo
-                try {
-                  const FileSystem = require('expo-file-system');
-                  if (FileSystem && photo.uri) {
-                    await FileSystem.deleteAsync(photo.uri).catch(() => { });
-                  }
-                } catch (e) {
-                  // Ignore cleanup errors
-                }
-              }
-            } catch (error) {
-              console.warn('Face detection capture error:', error);
-            }
-          }
-          faceDetectionTimeoutRef.current = null;
-        }, 200);
+    faceDetectionTimeoutRef.current = setTimeout(async () => {
+      if (!cameraRef.current || isProcessingRef.current) {
+        faceDetectionTimeoutRef.current = null;
+        return;
       }
-    }, 800); // Check every 0.8 seconds for more responsive detection
+
+      try {
+        const detectionPhoto = await cameraRef.current.takePictureAsync({
+          quality: 0.5, 
+          base64: false,
+          shutterSound: false,
+        });
+
+        if (detectionPhoto && detectionPhoto.uri) {
+          // Detect faces using ML Kit
+          const faces = await MLKitFaceDetection.detect(detectionPhoto.uri);
+          const hasFace = faces && faces.length > 0;
+
+          // Update face detection status only if changed
+          if (hasFace !== faceInFrameRef.current) {
+            faceInFrameRef.current = hasFace;
+            setFaceInFrame(hasFace);
+          }
+
+          // If face detected and not in cooldown, capture and send attendance
+          if (hasFace && now >= nextAllowedCaptureAtRef.current) {
+            lastCaptureTimeRef.current = now;
+            nextAllowedCaptureAtRef.current = now + 500; // Minimal 300ms cooldown to prevent duplicate captures of same frame
+            await captureAndSend();
+          }
+
+          // Async cleanup - don't wait for it
+          try {
+            const FileSystem = require('expo-file-system');
+            if (FileSystem && detectionPhoto.uri && detectionPhoto.uri.startsWith('file://')) {
+              FileSystem.deleteAsync(detectionPhoto.uri, { idempotent: true }).catch(() => {
+                // Silently ignore cleanup errors
+              });
+            }
+          } catch (err) {
+            // Silently fail - temp file cleanup is not critical
+          }
+        }
+      } catch (error) {
+        console.warn('Face detection error:', error);
+      } finally {
+        faceDetectionTimeoutRef.current = null;
+      }
+    }, 300); // Reduced to 300ms for rapid face detection
+  }, [started, cameraActive, captureAndSend]);
+
+  useEffect(() => {
+    if (!started || !cameraActive) {
+      if (faceDetectionTimeoutRef.current) {
+        clearTimeout(faceDetectionTimeoutRef.current);
+        faceDetectionTimeoutRef.current = null;
+      }
+      faceInFrameRef.current = false;
+      setFaceInFrame(false);
+      return;
+    }
+
+    const scanInterval = setInterval(() => {
+      scanForFaces();
+    }, 600);
 
     return () => {
-      clearInterval(checkInterval);
-      if (captureTimeoutRef.current) {
-        clearTimeout(captureTimeoutRef.current);
-        captureTimeoutRef.current = null;
-      }
+      clearInterval(scanInterval);
       if (faceDetectionTimeoutRef.current) {
         clearTimeout(faceDetectionTimeoutRef.current);
         faceDetectionTimeoutRef.current = null;
       }
     };
-  }, [started, cameraActive, captureAndSend, hasPotentialFaceInFrame]);
+  }, [started, cameraActive, scanForFaces]);
 
   // Handle start - explicit user action to request location first, then start camera
   const handleStart = useCallback(async () => {
@@ -747,58 +752,44 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                     toast.type === 'info' && styles.toastIconInfo,
                   ]}
                 >
-                  <MaterialIcons
-                    name={
-                      toast.type === 'success'
-                        ? 'check-circle'
-                        : toast.type === 'error'
+                  {toast.type === 'success' ? (
+                    <Text style={styles.toastCheckmark}>✓</Text>
+                  ) : (
+                    <MaterialIcons
+                      name={
+                        toast.type === 'error'
                           ? 'error'
                           : 'info'
-                    }
-                    size={24}
-                    color="#fff"
-                  />
+                      }
+                      size={24}
+                      color="#fff"
+                    />
+                  )}
                 </View>
 
                 <View style={styles.toastContent}>
-                  <View style={styles.toastHeader}>
-                    {toast.employee && (
-                      <Text style={styles.toastTitle}>{toast.employee}</Text>
-                    )}
-                    <Text style={styles.toastTime}>
-                      {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                  </View>
-                  <Text style={styles.toastMessage}>{toast.message}</Text>
-
-                  {(toast.confidence || toast.location) && (
-                    <View style={styles.toastMeta}>
-                      {toast.confidence && (
-                        <View style={[styles.metaTag, styles.metaTagConfidence]}>
-                          <Text style={styles.metaIcon}>🎯</Text>
-                          <Text style={styles.metaText}>{toast.confidence}%</Text>
-                        </View>
-                      )}
-                      {toast.location && (
-                        <View style={[styles.metaTag, styles.metaTagLocation]}>
-                          <Text style={styles.metaIcon}>📍</Text>
-                          <Text style={styles.metaText}>
-                            {toast.location.latitude.toFixed(4)}, {toast.location.longitude.toFixed(4)}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {(toast.checkin || toast.checkout) && (
-                    <View style={styles.toastTimes}>
-                      {toast.checkin && (
-                        <Text style={styles.toastTimeInfo}>Check-in: {toast.checkin}</Text>
-                      )}
-                      {toast.checkout && (
-                        <Text style={styles.toastTimeInfo}>Check-out: {toast.checkout}</Text>
-                      )}
-                    </View>
+                  {toast.type === 'success' ? (
+                    <>
+                      <View style={styles.toastSuccessHeader}>
+                        <Text style={styles.toastAttendanceLabel}>Attendance Marked</Text>
+                        {toast.employee && (
+                          <Text style={styles.toastEmployeeName}> - {toast.employee}</Text>
+                        )}
+                      </View>
+                      <Text style={styles.toastDateTime}>
+                        {new Date().toLocaleString([], {
+                          year: 'numeric',
+                          month: 'short',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.toastMessage}>{toast.message}</Text>
+                    </>
                   )}
                 </View>
               </View>
@@ -880,47 +871,71 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
                   toast.type === 'info' && styles.toastIconInfo,
                 ]}
               >
-                <MaterialIcons
-                  name={
-                    toast.type === 'success'
-                      ? 'check-circle'
-                      : toast.type === 'error'
+                {toast.type === 'success' ? (
+                  <Text style={styles.toastCheckmark}>✓</Text>
+                ) : (
+                  <MaterialIcons
+                    name={
+                      toast.type === 'error'
                         ? 'error'
                         : 'info'
-                  }
-                  size={24}
-                  color="#fff"
-                />
+                    }
+                    size={24}
+                    color="#fff"
+                  />
+                )}
               </View>
 
               <View style={styles.toastContent}>
-                <View style={styles.toastHeader}>
-                  {toast.employee && (
-                    <Text style={styles.toastTitle}>{toast.employee}</Text>
-                  )}
-                  <Text style={styles.toastTime}>
-                    {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                </View>
-                <Text style={styles.toastMessage}>{toast.message}</Text>
+                {toast.type === 'success' ? (
+                  <>
+                    <View style={styles.toastSuccessHeader}>
+                      <Text style={styles.toastAttendanceLabel}>Attendance Marked</Text>
+                      {toast.employee && (
+                        <Text style={styles.toastEmployeeName}> - {toast.employee}</Text>
+                      )}
+                    </View>
+                    <Text style={styles.toastDateTime}>
+                      {new Date().toLocaleString([], {
+                        year: 'numeric',
+                        month: 'short',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.toastHeader}>
+                      {toast.employee && (
+                        <Text style={styles.toastTitle}>{toast.employee}</Text>
+                      )}
+                      <Text style={styles.toastTime}>
+                        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                    {/* <Text style={styles.toastMessage}>{toast.message}</Text> */}
 
-                {(toast.confidence || toast.location) && (
-                  <View style={styles.toastMeta}>
-                    {toast.confidence && (
-                      <View style={[styles.metaTag, styles.metaTagConfidence]}>
-                        <Text style={styles.metaIcon}>🎯</Text>
-                        <Text style={styles.metaText}>{toast.confidence}%</Text>
+                    {/* {(toast.confidence || toast.location) && (
+                      <View style={styles.toastMeta}>
+                        {toast.confidence && (
+                          <View style={[styles.metaTag, styles.metaTagConfidence]}>
+                            <Text style={styles.metaIcon}>🎯</Text>
+                            <Text style={styles.metaText}>{toast.confidence}%</Text>
+                          </View>
+                        )}
+                        {toast.location && (
+                          <View style={[styles.metaTag, styles.metaTagLocation]}>
+                            <Text style={styles.metaIcon}>📍</Text>
+                            <Text style={styles.metaText}>
+                              {toast.location.latitude.toFixed(4)}, {toast.location.longitude.toFixed(4)}
+                            </Text>
+                          </View>
+                        )}
                       </View>
-                    )}
-                    {toast.location && (
-                      <View style={[styles.metaTag, styles.metaTagLocation]}>
-                        <Text style={styles.metaIcon}>📍</Text>
-                        <Text style={styles.metaText}>
-                          {toast.location.latitude.toFixed(4)}, {toast.location.longitude.toFixed(4)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
+                    )} */}
+                  </>
                 )}
               </View>
             </View>
@@ -1346,7 +1361,7 @@ const styles = StyleSheet.create({
     marginRight: 14,
   },
   toastIconSuccess: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(16, 210, 146, 0.88)',
   },
   toastIconError: {
     backgroundColor: 'rgba(239, 68, 68, 0.18)',
@@ -1422,6 +1437,32 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#3b82f6',
     marginTop: 2,
+  },
+  toastCheckmark: {
+    fontSize: 40,
+    fontWeight: '600',
+    color: '#ffffffff',
+  },
+  toastAttendanceLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1e293b',
+  },
+  toastEmployeeName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  toastSuccessHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+    flexWrap: 'wrap',
+  },
+  toastDateTime: {
+    fontSize: 14,
+    color: '#64748b',
+    fontWeight: '500',
   },
 
   // Face Detection Status
