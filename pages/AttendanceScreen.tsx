@@ -56,12 +56,12 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
   const isProcessingRef = useRef(false);
   const faceDetectedRef = useRef(false);
   const lastCaptureTimeRef = useRef(0);
-  const captureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const faceDetectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const faceDetectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastToastTimeRef = useRef<{ [key: string]: number }>({});
   const faceInFrameRef = useRef(false);
   const nextAllowedCaptureAtRef = useRef(0);
-  const faceDetectionCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const faceDetectionCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<View | null>(null);
 
   // Animations
@@ -213,7 +213,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     (
       message: string,
       type: ToastMessage['type'] = 'info',
-      opts?: Partial<Omit<ToastMessage, 'id' | 'message' | 'type'>>,
+      opts?: Partial<Omit<ToastMessage, 'id' | 'message' | 'type'>> & { durationMs?: number },
       key?: string
     ) => {
       // Rate limit identical toast types with same key
@@ -227,8 +227,9 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
       const id = Date.now().toString();
       setToasts((prev) => [...prev, { id, message, type, ...(opts || {}) }]);
-      // Auto-remove after 5 seconds
-      setTimeout(() => removeToast(id), 3000);
+      // Auto-remove after duration specified (default 3 seconds)
+      const duration = opts?.durationMs || 3000;
+      setTimeout(() => removeToast(id), duration);
     },
     []
   );
@@ -293,9 +294,9 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
     lastCaptureTimeRef.current = Date.now();
 
     try {
-      // Capture photo - optimized quality for faster upload
+      // Capture photo with higher quality for better recognition
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.5, // Reduced to 0.5 for much faster transmission
+        quality: 0.5,
         base64: true,
         shutterSound: false,
       });
@@ -325,7 +326,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       }
 
       if (!geoData) {
-        const errorMsg = 'Enable location on your device to mark attendance. If already allowed, check app permissions.';
+        const errorMsg = 'Enable location on your device and app to mark attendance. If already allowed, check app permissions.';
         showToast(
           errorMsg,
           'error',
@@ -352,15 +353,29 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       const response = await markAttendance(formData);
       const data = response?.data || {};
 
+      // Treat any valid status/message as success, not just 'successful', 'checkin', or 'checkout'
       if (data.status && data.message) {
         let toastTitle = 'Attendance Marked';
         let toastType: ToastMessage['type'] = 'success';
         let toastMsg = data.message;
 
+        // Special handling for already marked
         if (data.status === 'Already marked') {
           toastTitle = 'Already Checked In/Out';
           toastType = 'info';
         }
+
+        // Add geolocation info if available
+        try {
+          if (geoData) {
+            const coords = `${Number(geoData.latitude).toFixed(6)}, ${Number(geoData.longitude).toFixed(6)}`;
+            toastMsg += `\nLocation: ${coords} (±${Math.round(geoData.accuracy)}m)`;
+          }
+          const serverAddress = data?.location?.address;
+          if (serverAddress) {
+            toastMsg += `\nAddress: ${serverAddress}`;
+          }
+        } catch (e) { }
 
         showToast(toastMsg, toastType, {
           employee: data.employee || data.employee_name,
@@ -368,24 +383,12 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
           location: geoData,
           checkin: data.checkin_time || data.checkin,
           checkout: data.checkout_time || data.checkout,
+          durationMs: 4500,
         });
 
-        // Speak result - synchronized with toast display
+        // Speak the message (without title) for accessibility
         try {
-          const employeeName = data?.employee || data?.employee_name || 'User';
-          const hasCheckout = data?.checkout_time || data?.checkout;
-          const attendanceType = hasCheckout ? 'check-out' : 'check-in';
-          let speakMsg = '';
-          
-          if (toastType === 'success') {
-            speakMsg = `Hi ${employeeName}, your attendance is marked`;
-          } else if (toastType === 'info') {
-            speakMsg = `Hi ${employeeName}, you have already checked ${attendanceType}`;
-          }
-          
-          if (speakMsg) {
-            speakText(speakMsg);
-          }
+          speakText(toastMsg);
         } catch (e) { }
 
         nextAllowedCaptureAtRef.current = Date.now() + 500;
@@ -404,6 +407,25 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       let errMsg = 'Server connection failed';
       let errTitle = 'Connection Error';
 
+      // Handle cooldown error (HTTP 429)
+      if (error.response?.status === 429 && error.response?.data) {
+        errMsg = error.response.data.message || 'Please wait before marking attendance again.';
+        const cooldownSeconds = error.response.data.seconds_remaining || 300;
+        const cooldownMsg = `${errMsg}. Try after 5 minutes`;
+        
+        showToast(
+          cooldownMsg,
+          'info',
+          undefined,
+          'attendance-cooldown'
+        );
+
+        speakText(cooldownMsg);
+        isProcessingRef.current = false;
+        setIsProcessing(false);
+        return;
+      }
+
       if (error.response?.data?.error) {
         switch (error.response.data.error) {
           case 'No face detected':
@@ -415,13 +437,15 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
             errMsg = 'Your face is not registered in the system. Please contact administrator.';
             break;
           default:
-            errTitle = 'Error';
-            errMsg = error.response.data.error;
+            // errTitle = 'Error';
+            errMsg = error.response.data.message || error.response.data.error;
         }
       } else if (error.response?.data) {
         const errorData = error.response.data;
         const errorKeys = Object.keys(errorData);
+
         if (errorKeys.length > 0) {
+          errTitle = 'Validation Error';
           const firstErrorKey = errorKeys[0];
           const firstError = errorData[firstErrorKey];
           errMsg = Array.isArray(firstError) ? firstError[0] : firstError;
@@ -430,7 +454,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
       const fullErrorMsg = `${errTitle}: ${errMsg}`;
       showToast(fullErrorMsg, 'error', undefined, 'attendance-error');
-      speakText(fullErrorMsg);
+      speakText(errMsg); // Speak only the message, not the title
     
       nextAllowedCaptureAtRef.current = Date.now() + 300;
       isProcessingRef.current = false;
@@ -477,11 +501,54 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
             setFaceInFrame(hasFace);
           }
 
-          // If face detected and not in cooldown, capture and send attendance
-          if (hasFace && now >= nextAllowedCaptureAtRef.current) {
-            lastCaptureTimeRef.current = now;
-            nextAllowedCaptureAtRef.current = now + 500; // Minimal 300ms cooldown to prevent duplicate captures of same frame
-            await captureAndSend();
+          // If face detected and not in cooldown, capture and send attendance after 1.5s
+          if (hasFace && !isProcessingRef.current && !faceDetectionCheckRef.current) {
+            faceDetectionCheckRef.current = setTimeout(async () => {
+              if (faceInFrameRef.current && !isProcessingRef.current && cameraRef.current) {
+                try {
+                  // Double-check if face is still present right before capturing
+                  try {
+                    const doubleCheckPhoto = await cameraRef.current.takePictureAsync({
+                      quality: 0.5,
+                      base64: false,
+                      shutterSound: false,
+                    });
+                    if (!doubleCheckPhoto || !doubleCheckPhoto.uri) {
+                      console.log('Double-check photo capture failed, aborting.');
+                      faceInFrameRef.current = false;
+                      setFaceInFrame(false);
+                      faceDetectionCheckRef.current = null;
+                      return;
+                    }
+                    const predictions = await MLKitFaceDetection.detect(doubleCheckPhoto.uri);
+                    if (!predictions || predictions.length === 0) {
+                      console.log('Face lost before capture, aborting.');
+                      faceInFrameRef.current = false;
+                      setFaceInFrame(false);
+                      faceDetectionCheckRef.current = null;
+                      return;
+                    }
+                  } catch (checkErr) {
+                    console.error('Double-check face detection failed:', checkErr);
+                    faceInFrameRef.current = false;
+                    setFaceInFrame(false);
+                    faceDetectionCheckRef.current = null;
+                    return;
+                  }
+
+                  await captureAndSend();
+                } catch (e) {
+                  console.error('Auto-capture error', e);
+                  lastCaptureTimeRef.current = Date.now();
+                  isProcessingRef.current = false;
+                  setIsProcessing(false);
+                }
+              }
+              faceDetectionCheckRef.current = null;
+            }, 1500); // 1.5s delay for user to settle in frame
+          } else if (!hasFace && faceDetectionCheckRef.current) {
+            clearTimeout(faceDetectionCheckRef.current);
+            faceDetectionCheckRef.current = null;
           }
 
           // Async cleanup - don't wait for it
@@ -501,7 +568,7 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
       } finally {
         faceDetectionTimeoutRef.current = null;
       }
-    }, 300); // Reduced to 300ms for rapid face detection
+    }, 200); // Check every 200ms to match web version
   }, [started, cameraActive, captureAndSend]);
 
   useEffect(() => {
@@ -510,6 +577,10 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
         clearTimeout(faceDetectionTimeoutRef.current);
         faceDetectionTimeoutRef.current = null;
       }
+      if (faceDetectionCheckRef.current) {
+        clearTimeout(faceDetectionCheckRef.current);
+        faceDetectionCheckRef.current = null;
+      }
       faceInFrameRef.current = false;
       setFaceInFrame(false);
       return;
@@ -517,13 +588,17 @@ export const AttendanceScreen: React.FC = (): React.ReactElement => {
 
     const scanInterval = setInterval(() => {
       scanForFaces();
-    }, 600);
+    }, 200); // Check every 200ms to match web version
 
     return () => {
       clearInterval(scanInterval);
       if (faceDetectionTimeoutRef.current) {
         clearTimeout(faceDetectionTimeoutRef.current);
         faceDetectionTimeoutRef.current = null;
+      }
+      if (faceDetectionCheckRef.current) {
+        clearTimeout(faceDetectionCheckRef.current);
+        faceDetectionCheckRef.current = null;
       }
     };
   }, [started, cameraActive, scanForFaces]);

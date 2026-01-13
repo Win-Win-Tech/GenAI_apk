@@ -10,7 +10,14 @@
     "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.trueface.mobile.trueface"
+      "bundleIdentifier": "com.trueface.mobile.trueface",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to your camera to recognize faces for registration and attendance.",
+        "NSLocationWhenInUseUsageDescription": "This app needs your location to verify your presence at the assigned location during check-in/out.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to allow you to upload profile photos.",
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone for video capture features.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -58,9 +65,9 @@
         "origin": false
       },
       "eas": {
-        "projectId": "63c94b92-7cb5-4933-a5a3-d86007874601"
+        "projectId": "fff17c96-2b2c-446a-89f8-7f63817920a0"
       }
     },
-    "owner": "trueface"
+    "owner": "akshaya_muthukumar"
   }
 }
